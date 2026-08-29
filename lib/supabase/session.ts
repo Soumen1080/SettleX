@@ -60,7 +60,10 @@ function storeSession(session: WalletSession): void {
 /** Drops the cached token so the next authenticated call re-runs the handshake. */
 export function clearWalletSession(): void {
   memoizedSession = null;
-  inFlight = null;
+  // Abandon any pending handshakes: whatever they resolve to belongs to a
+  // session the user has just dropped. Each one still removes its own entry,
+  // so this only stops a late arrival from being reused.
+  inFlight.clear();
   if (memoizedClient) {
     void memoizedClient.client.removeAllChannels();
     memoizedClient = null;
@@ -76,7 +79,17 @@ export function clearWalletSession(): void {
 }
 
 let memoizedSession: WalletSession | null = null;
-let inFlight: Promise<WalletSession> | null = null;
+
+/**
+ * Pending handshakes, keyed by wallet address.
+ *
+ * A single shared slot meant that a call for wallet B arriving while wallet A
+ * was still signing received A's promise, and therefore A's session — the UI
+ * would mark B authenticated while every request was signed as A. Keying by
+ * address keeps the dedupe (one wallet prompt per wallet) without ever handing
+ * one wallet another's handshake.
+ */
+const inFlight = new Map<string, Promise<WalletSession>>();
 
 // ─── Change notifications ─────────────────────────────────────────────────────
 
@@ -203,12 +216,23 @@ export async function getWalletSession(
 
   if (options.interactive === false) return null;
 
-  if (!inFlight) {
-    inFlight = runHandshake(walletAddress).finally(() => {
-      inFlight = null;
+  let pending = inFlight.get(walletAddress);
+  if (!pending) {
+    pending = runHandshake(walletAddress).finally(() => {
+      inFlight.delete(walletAddress);
     });
+    inFlight.set(walletAddress, pending);
   }
-  return inFlight;
+
+  const session = await pending;
+
+  // Belt and braces: never hand back a session for a different wallet, however
+  // it was obtained. Callers act on this identity, so a mismatch must be an
+  // error rather than a silently wrong session.
+  if (session.walletAddress !== walletAddress) {
+    throw new WalletSessionError("The session returned belongs to a different wallet.");
+  }
+  return session;
 }
 
 // ─── Authenticated client ─────────────────────────────────────────────────────

@@ -37,6 +37,9 @@ SettleX uses:
   valid token match no rows.
 - Sessions are cached in `localStorage` and last 12 hours by default
   (`AUTH_SESSION_TTL_SECONDS`, capped at 24 hours).
+- Pending handshakes are tracked per wallet address, so concurrent sign-ins for
+  different wallets never share a promise, and `getWalletSession` refuses to
+  return a session whose address does not match the one asked for.
 
 ## Known Limitations
 
